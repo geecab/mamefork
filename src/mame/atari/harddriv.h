@@ -38,6 +38,10 @@
 #define HARDDRIV_MASTER_CLOCK   XTAL(32'000'000)
 #define HARDDRIV_GSP_CLOCK      XTAL(48'000'000)
 
+#define WHEEL_CENTER_EDGE_SIMULATE_USING_NVRAM_VALUES   0
+#define WHEEL_CENTER_EDGE_SIMULATE_USING_IDEAL_VALUES   1
+#define WHEEL_CENTER_EDGE_MANUAL                        2
+
 DECLARE_DEVICE_TYPE(HARDDRIV_BOARD,               harddriv_board_device_state)
 DECLARE_DEVICE_TYPE(HARDDRIVC_BOARD,              harddrivc_board_device_state)
 DECLARE_DEVICE_TYPE(RACEDRIV_BOARD,               racedriv_board_device_state)
@@ -133,6 +137,7 @@ protected:
 	void hdc68k_wheel_edge_reset_w(uint16_t data);
 
 	uint16_t hd68k_zram_r(address_space &space, offs_t offset, uint16_t mem_mask = ~0);
+	void hd68k_process_cntsptrn(int force_update = 0);
 	void hd68k_zram_w(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
 
 	void hdgsp_io_w(offs_t offset, u16 data, u16 mem_mask = ~u16(0));
@@ -425,10 +430,19 @@ protected:
 	uint8_t                 m_adc12_byte = 0;
 	uint16_t                m_adc12_data = 0;
 
-	uint16_t                m_hdc68k_last_wheel = 0;
+	uint16_t                m_hdc68k_last_wheel = 0xffff;
 	uint16_t                m_hdc68k_last_port1 = 0;
 	uint8_t                 m_hdc68k_wheel_edge = 0;
 	uint8_t                 m_hdc68k_shifter_state = 0;
+
+    int                     m_cntsptrn_processed = 0;
+    uint16_t                m_cntsptrn = 0;
+    uint16_t                m_patcen = 0;
+    uint16_t                m_last_cntsptrn = 0;
+    uint16_t                m_last_patcen = 0;
+    int                     m_spin_counter = 0;
+    int                     m_centre_encoder_mode = 0;
+    int                     m_centre_encoder_key_on = 0;
 
 	uint8_t                 m_st68k_sloop_bank = 0;
 	offs_t                  m_st68k_last_alt_sloop_offset = 0;

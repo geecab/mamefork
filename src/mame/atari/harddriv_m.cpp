@@ -9,7 +9,6 @@
 #include "emu.h"
 #include "harddriv.h"
 
-
 /*************************************
  *
  *  Constants and macros
@@ -246,42 +245,158 @@ uint16_t harddriv_state::hdc68k_port1_r()
 	result = (result | 0x0f00) ^ (m_hdc68k_shifter_state << 8);
 
 	/* merge in the wheel edge latch bit */
-	if (m_hdc68k_wheel_edge)
-		result ^= 0x4000;
+    if (m_hdc68k_wheel_edge)
+    {
+        result ^= 0x4000;
+        //printf("hdc68k_port1_r: merge latch result=%04X m_hdc68k_last_wheel=%04X\n", result, m_hdc68k_last_wheel);
+        m_hdc68k_wheel_edge = 0;
+    }
 
-	m_hdc68k_last_port1 = result;
-	return result;
+    m_hdc68k_last_port1 = result;
+    return result;
 }
 
 
 uint16_t harddriv_state::hda68k_port1_r()
 {
-	uint16_t result = m_a80000->read();
+    uint16_t result = m_a80000->read();
 
-	/* merge in the wheel edge latch bit */
-	if (m_hdc68k_wheel_edge)
-		result ^= 0x4000;
+    /* merge in the wheel edge latch bit */
+    if (m_hdc68k_wheel_edge)
+    {
+        result ^= 0x4000;
+        //printf("hda68k_port1_r: merge latch result=%04X m_hdc68k_last_wheel=%04X\n", result, m_hdc68k_last_wheel);
+        m_hdc68k_wheel_edge = 0;
+    }
 
-	return result;
+    return result;
 }
 
 
 uint16_t harddriv_state::hdc68k_wheel_r()
 {
-	/* grab the new wheel value */
-	uint16_t new_wheel = m_12badc[0].read_safe(0xffff);
+    // grab the new wheel value
+    uint16_t new_wheel, raw_wheel = m_12badc[0].read_safe(0xffff);
+    int wheel_diff = 0;
+    bool is_wheel_increasing = false;
 
-	/* hack to display the wheel position */
-	if (machine().input().code_pressed(KEYCODE_LSHIFT))
-		popmessage("%04X", new_wheel);
+    //First time in...
+    if(m_hdc68k_last_wheel == 0xffff)
+    {
+        //Ensures that at start up, raw_wheel at position 0x800 is in sync with the spin_counter..
+        m_hdc68k_last_wheel = raw_wheel;
+    }
 
-	/* if we crossed the center line, latch the edge bit */
-	if ((m_hdc68k_last_wheel / 0xf00) != (new_wheel / 0xf00))
-		m_hdc68k_wheel_edge = 1;
 
-	/* remember the last value and return the low 8 bits */
-	m_hdc68k_last_wheel = new_wheel;
-	return (new_wheel << 8) | 0xff;
+    if (machine().input().code_pressed(KEYCODE_C))
+    {
+        if (!m_centre_encoder_key_on)
+        {
+            m_centre_encoder_mode++;
+            if (m_centre_encoder_mode > 2) m_centre_encoder_mode = 0;
+
+            if(m_centre_encoder_mode == WHEEL_CENTER_EDGE_SIMULATE_USING_NVRAM_VALUES)
+            {
+                hd68k_process_cntsptrn(1/*force update*/);
+            }
+            else if(m_centre_encoder_mode == WHEEL_CENTER_EDGE_SIMULATE_USING_IDEAL_VALUES)
+            {
+                hd68k_process_cntsptrn(1/*force update*/);
+            }
+            else //WHEEL_CENTER_EDGE_MANUAL
+            {
+                popmessage("Wheel center encoder: Manual operation");
+            }
+
+            m_centre_encoder_key_on = 1;
+        }
+    }
+    else
+    {
+        m_centre_encoder_key_on = 0;
+    }
+
+    if((m_hdc68k_last_wheel < 0x400) && (raw_wheel > 0xC00))        is_wheel_increasing = false;    //Wrapped from bottom to top
+    else if ((m_hdc68k_last_wheel > 0xC00) && (raw_wheel < 0x400))  is_wheel_increasing = true;     //Wrapped from top to bottom
+    else if(m_hdc68k_last_wheel > raw_wheel)                        is_wheel_increasing = false;
+    else if(m_hdc68k_last_wheel < raw_wheel)                        is_wheel_increasing = true;
+
+    new_wheel = m_hdc68k_last_wheel;
+    while(new_wheel != raw_wheel)
+    {
+        if (is_wheel_increasing)
+        {
+            if (new_wheel >= 0xFFF) new_wheel = 0x000;
+            else new_wheel++;
+        }
+        else
+        {
+            if (new_wheel <= 0x000) new_wheel = 0xFFF;
+            else new_wheel--;
+        }
+
+        //Lets say the encoder can't move more that 64 teeth per cycle...
+        if (wheel_diff++ > 0x20) break;
+    }
+
+
+    if(m_centre_encoder_mode == WHEEL_CENTER_EDGE_MANUAL)
+    {
+        if (machine().input().code_pressed(KEYCODE_LSHIFT))
+        {
+            popmessage("wheel=%04X", new_wheel);
+        }
+    }
+    else
+    {
+        if (machine().input().code_pressed(KEYCODE_LSHIFT))
+        {
+            popmessage("wheel=%04X spin_counter=%d", new_wheel, m_spin_counter);
+        }
+
+        if(m_cntsptrn_processed && wheel_diff)
+        {
+            bool do_latch = false;
+
+            //If the encoder has has rolled over..
+            if(is_wheel_increasing)
+            {
+                m_spin_counter += wheel_diff;
+                if (m_spin_counter >= int(m_cntsptrn))
+                {
+                    m_spin_counter = m_spin_counter - int(m_cntsptrn);
+                    do_latch = true;
+                }
+            }
+            else
+            {
+                m_spin_counter -= wheel_diff;
+                if (m_spin_counter < 0)
+                {
+                    m_spin_counter = m_spin_counter + int(m_cntsptrn);
+                    do_latch = true;
+                }
+            }
+
+            if(do_latch)
+            {
+                //popmessage("latching at %04X", new_wheel);
+                if(m_hdc68k_wheel_edge == 1)
+                {
+                    //Already pending a latch. There is no point in doing 2 really quick latches,
+                    //do nothing for the same effect.
+                    m_hdc68k_wheel_edge = 0;
+                }
+                else
+                {
+                    m_hdc68k_wheel_edge = 1;
+                }
+            }
+        }
+    }
+
+    m_hdc68k_last_wheel = new_wheel;
+    return (new_wheel << 8) | 0xff;
 }
 
 
@@ -445,9 +560,10 @@ void harddriv_state::hd68k_nwr_w(offs_t offset, uint16_t data)
 void harddriv_state::hdc68k_wheel_edge_reset_w(uint16_t data)
 {
 	/* reset the edge latch */
-	m_hdc68k_wheel_edge = 0;
+	//This function always gets called when the center edge occurs in the service mode, but not always during the game.
+	//For thawt reason, tt can not be relied upton to switch this flag...
+	//m_hdc68k_wheel_edge = 0;
 }
-
 
 
 /*************************************
@@ -466,7 +582,59 @@ uint16_t harddriv_state::hd68k_zram_r(address_space &space, offs_t offset, uint1
 	if (ACCESSING_BITS_8_15)
 		data |= m_200e->read(offset) << 8;
 
+
+    if (offset == 0x212)
+    {
+        m_last_cntsptrn = data;
+    }
+    else if (offset == 0x213)
+    {
+        m_last_patcen = data;
+        hd68k_process_cntsptrn();
+    }
+
 	return data;
+}
+
+
+void harddriv_state::hd68k_process_cntsptrn(int force_update)
+{
+    if(m_centre_encoder_mode == WHEEL_CENTER_EDGE_SIMULATE_USING_NVRAM_VALUES)
+    {
+        if(!m_cntsptrn_processed || force_update)
+        {
+            int i_patcen;
+
+            //Save whatever was last read from memory
+            m_cntsptrn = m_last_cntsptrn;
+            m_patcen = m_last_patcen;
+
+            if ((m_patcen&0xF000) == 0xF000)
+            {
+                //Negative patcen...
+                i_patcen = -1 * int(0x1000 - (m_patcen&0xFFF));
+                m_spin_counter = int(m_cntsptrn) + i_patcen;
+            }
+            else
+            {
+                //Positive patcen...
+                m_spin_counter = i_patcen = int(m_patcen&0xFFF);
+            }
+
+            popmessage("Wheel center encoder: Simulate using NVRAM values\nCNTSPTRN=%d PATCEN=%d SPIN_COUNTER=%d", m_cntsptrn, i_patcen, m_spin_counter);
+            //printf("hd68k_process_cntsptrn(NVRAM) CNTSPTRN=%04X(%d) PATCEN=%04X(%d) SPIN_COUNTER=%d\n", m_cntsptrn, m_cntsptrn, m_patcen, i_patcen, m_spin_counter);
+            m_cntsptrn_processed = 1;
+        }
+    }
+    else if(m_centre_encoder_mode == WHEEL_CENTER_EDGE_SIMULATE_USING_IDEAL_VALUES)
+    {
+        m_cntsptrn = 1024;
+        m_patcen = 0;
+        m_spin_counter = 0;
+        m_cntsptrn_processed = 1;
+        popmessage("Wheel center encoder: Simulate using ideal values\nCNTSPTRN=%d PATCEN=%d SPIN_COUNTER=%d", m_cntsptrn, m_patcen, m_spin_counter);
+        //printf("hd68k_process_cntsptrn(IDEAL) CNTSPTRN=%04X(%d) PATCEN=%04X(%d) SPIN_COUNTER=%d\n", m_cntsptrn, m_cntsptrn, m_patcen, m_patcen, m_spin_counter);
+    }
 }
 
 
@@ -480,6 +648,15 @@ void harddriv_state::hd68k_zram_w(offs_t offset, uint16_t data, uint16_t mem_mas
 		if (ACCESSING_BITS_8_15)
 			m_200e->write(offset, data >> 8);
 	}
+
+    if (offset == 0x212)
+    {
+        m_last_cntsptrn = data;
+    }
+    else if (offset == 0x213)
+    {
+        m_last_patcen = data;
+    }
 }
 
 
