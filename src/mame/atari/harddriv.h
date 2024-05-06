@@ -125,6 +125,7 @@ protected:
 	uint16_t hdc68k_wheel_r();
 	uint16_t hd68k_sound_reset_r();
 
+	void init_optical_center_encoder(int cntsptrn, int patcen);
 	void hd68k_adc_control_w(offs_t offset, uint16_t data, uint16_t mem_mask = ~0);
 	void hd68k_wr0_write(offs_t offset, uint16_t data);
 	void hd68k_wr1_write(offs_t offset, uint16_t data);
@@ -429,6 +430,10 @@ protected:
 	uint16_t                m_hdc68k_last_port1 = 0;
 	uint8_t                 m_hdc68k_wheel_edge = 0;
 	uint8_t                 m_hdc68k_shifter_state = 0;
+
+	uint16_t                m_cntsptrn = 0;
+	uint16_t                m_patcen = 0;
+	int                     m_cntsptrn_pos = 0;
 
 	uint8_t                 m_st68k_sloop_bank = 0;
 	offs_t                  m_st68k_last_alt_sloop_offset = 0;

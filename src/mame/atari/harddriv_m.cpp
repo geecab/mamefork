@@ -9,7 +9,6 @@
 #include "emu.h"
 #include "harddriv.h"
 
-
 /*************************************
  *
  *  Constants and macros
@@ -84,6 +83,74 @@ void harddriv_state::device_reset()
 	m_xdsp_serial_irq_off_timer->adjust(attotime::never);
 }
 
+
+void harddriv_state::init_optical_center_encoder(int cntsptrn, int patcen)
+{
+    /*
+    Compact systems had 2 optical encoders connected to the steering wheel:
+
+    1. A Steering Encoder
+        Reads an optical disk that has many holes/teeth. Used to work out how
+        far the steering wheel has moved.
+
+    2. A Center Encoder
+        Reads an optical disk that has 1 single hole. When the hole is seen by
+        the optical reader, a 'Center Edge' signal is triggered.
+
+    CNTSPTRN and PATCEN are terms used in the service menu.
+
+    CNTSPTRN is the amount of Steering Encoder values read for one full
+    rotation of the steering wheel (I.e. From between 2 Center Edges).
+
+    PATCEN is the amount of Steering Encoder values read after detecting
+    a Center Edge, that will ensure the physical steering wheel is perfectly
+    straight. Thus, a PATCEN of 0 indicates the physical steering wheel will
+    be perfectly straight the moment there is a center edge.
+
+    For emulation purposes, this function corrects any +ive/-ive PATCEN so
+    that the user's experience always plays as if PATCEN is 0. This is
+    important for Street Drivin where there is no steering calibration page
+    in the service menu, and you are forced to use the default PATCEN of -98.
+
+    This function could be called after reading the vnram (mainpcb_210e and
+    mainpcb_200e), where CNTSPTRN is stored at address 0x212 and PATCEN is
+    stored at address 0x213.
+
+    During play, CNTSPTRN and PATCEN are used so that the game knows exactly
+    where the central position of the steering wheel is. When you crash and
+    your car re-spawns onto the track, you'll be expected to turn your wheel
+    back to center position to go in a straight line again (In the arcade,
+    force feedback motors would return your wheel to this position).
+    *Important* should you have rotated the wheel several times at
+    the moment of crashing, the game won't expect you undo all your rotations
+    before going in a straight line again. Instead, you'll only be expected
+    to undo your rotations until the wheel is physically centered again.
+
+    Example:
+        Lets say, CNTSPTRN = 1024 (0x400) and PATCEN = 0. When the game
+        starts the 12 bit ADC encoder (12badc) reads 0x800. This means a
+        Center Edge will triggered at 0x000, 0x400, 0x800 and 0xC00. Whilst
+        driving, the car will be moving forward in a straight line when the
+        12badc shows 0x800. You then crash at a time when the 12badc reads
+        0x250. You'll only be expected to rotated your wheel back so that
+        the encoder shows 0x400 to go in a straight line again, not all
+        the way back to 0x800.
+    */
+
+	//When the game starts up the 12 bit adc steering encoder always reads
+	//0x800 so lets do the same here.
+	m_hdc68k_last_wheel = 0x800;
+	m_cntsptrn = cntsptrn;
+	m_patcen = patcen;
+	if (m_patcen < 0)
+	{
+		m_cntsptrn_pos = m_cntsptrn - m_patcen;
+	}
+	else
+	{
+		m_cntsptrn_pos = patcen;
+	}
+}
 
 
 /*************************************
@@ -247,7 +314,11 @@ uint16_t harddriv_state::hdc68k_port1_r()
 
 	/* merge in the wheel edge latch bit */
 	if (m_hdc68k_wheel_edge)
+	{
 		result ^= 0x4000;
+		//printf("hdc68k_port1_r: merge latch result=%04X m_hdc68k_last_wheel=%04X\n", result, m_hdc68k_last_wheel);
+		m_hdc68k_wheel_edge = 0;
+	}
 
 	m_hdc68k_last_port1 = result;
 	return result;
@@ -260,7 +331,11 @@ uint16_t harddriv_state::hda68k_port1_r()
 
 	/* merge in the wheel edge latch bit */
 	if (m_hdc68k_wheel_edge)
+	{
 		result ^= 0x4000;
+		//printf("hda68k_port1_r: merge latch result=%04X m_hdc68k_last_wheel=%04X\n", result, m_hdc68k_last_wheel);
+		m_hdc68k_wheel_edge = 0;
+	}
 
 	return result;
 }
@@ -268,18 +343,80 @@ uint16_t harddriv_state::hda68k_port1_r()
 
 uint16_t harddriv_state::hdc68k_wheel_r()
 {
-	/* grab the new wheel value */
-	uint16_t new_wheel = m_12badc[0].read_safe(0xffff);
+	// grab the new wheel value
+	uint16_t new_wheel, raw_wheel = m_12badc[0].read_safe(0xffff);
+	int wheel_diff = 0;
+	bool is_wheel_increasing = false;
+	static bool fake_center_encoder_enabled = true;
 
-	/* hack to display the wheel position */
+	if (machine().input().code_pressed(KEYCODE_D))
+	{
+		fake_center_encoder_enabled = false;
+	}
+
+	// Work out which way the wheel is spinning
+	if((m_hdc68k_last_wheel < 0x400) && (raw_wheel > 0xC00))        is_wheel_increasing = false;    //Wrapped from bottom to top
+	else if ((m_hdc68k_last_wheel > 0xC00) && (raw_wheel < 0x400))  is_wheel_increasing = true;     //Wrapped from top to bottom
+	else if(m_hdc68k_last_wheel > raw_wheel)                        is_wheel_increasing = false;
+	else if(m_hdc68k_last_wheel < raw_wheel)                        is_wheel_increasing = true;
+
+	//Steering damping:
+	//Ensure we don't jump from one encoder value to another too quickly confusing the game
+	//The game is aware only of changes to m_12badc's lower byte. This means the game can get easily confused if you where to move
+	//the wheel very quickly from say position 0x800 to 0xC12 in one cycle (Which was perhaps physically impossible using the
+	//actual arcade encoder). The game would be under the impression the wheel has moved only 0x12 values, rather than 0x412 values.
+	//If we detect a large change, slowly feed that information back to the game in managemtble amounts.
+	new_wheel = m_hdc68k_last_wheel;
+	while(new_wheel != raw_wheel)
+	{
+		if (is_wheel_increasing)
+		{
+			if (new_wheel >= 0xFFF) new_wheel = 0x000;
+			else new_wheel++;
+		}
+		else
+		{
+			if (new_wheel <= 0x000) new_wheel = 0xFFF;
+			else new_wheel--;
+		}
+
+		//Lets say the encoder can't move more that 64 teeth per cycle...
+		if (wheel_diff++ > 0x20) break;
+	}
+
 	if (machine().input().code_pressed(KEYCODE_LSHIFT))
-		popmessage("%04X", new_wheel);
+	{
+		popmessage("wheel=0x%04X center_encoder=0x%04X", new_wheel, m_cntsptrn_pos);
+	}
 
-	/* if we crossed the center line, latch the edge bit */
-	if ((m_hdc68k_last_wheel / 0xf00) != (new_wheel / 0xf00))
-		m_hdc68k_wheel_edge = 1;
 
-	/* remember the last value and return the low 8 bits */
+	//Turn the fake center encoder and maybe trigger a center edge.
+	//See comment in  init_optical_center_encoder for more information.
+	if(fake_center_encoder_enabled)
+	{
+		if(wheel_diff)
+		{
+			if(is_wheel_increasing)
+			{
+				m_cntsptrn_pos += wheel_diff;
+				if (m_cntsptrn_pos >= int(m_cntsptrn))
+				{
+					m_cntsptrn_pos = m_cntsptrn_pos - int(m_cntsptrn);
+					m_hdc68k_wheel_edge = 1;
+				}
+			}
+			else
+			{
+				m_cntsptrn_pos -= wheel_diff;
+				if (m_cntsptrn_pos < 0)
+				{
+					m_cntsptrn_pos = m_cntsptrn_pos + int(m_cntsptrn);
+					m_hdc68k_wheel_edge = 1;
+				}
+			}
+		}
+	}
+
 	m_hdc68k_last_wheel = new_wheel;
 	return (new_wheel << 8) | 0xff;
 }
@@ -445,9 +582,10 @@ void harddriv_state::hd68k_nwr_w(offs_t offset, uint16_t data)
 void harddriv_state::hdc68k_wheel_edge_reset_w(uint16_t data)
 {
 	/* reset the edge latch */
-	m_hdc68k_wheel_edge = 0;
+	//This function always gets called when the center edge occurs in the service mode, but not always during the game.
+	//For that reason, it can not be relied upton to reset the m_hdc68k_wheel_edge flag back to zero...
+	//m_hdc68k_wheel_edge = 0;
 }
-
 
 
 /*************************************

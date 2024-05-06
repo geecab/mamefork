@@ -1041,7 +1041,7 @@ static INPUT_PORTS_START( racedrivc )
 	PORT_BIT( 0x0400, IP_ACTIVE_LOW, IPT_BUTTON4 )  PORT_NAME("3rd Gear")
 	PORT_BIT( 0x0800, IP_ACTIVE_LOW, IPT_BUTTON5 )  PORT_NAME("4th Gear")
 	PORT_BIT( 0x3000, IP_ACTIVE_LOW, IPT_UNUSED )
-	PORT_BIT( 0x4000, IP_ACTIVE_LOW, IPT_CUSTOM )  /* center edge on steering wheel */
+	PORT_BIT( 0x4000, IP_ACTIVE_LOW, IPT_CUSTOM )  PORT_NAME("Wheel Center Edge")
 	PORT_BIT( 0x8000, IP_ACTIVE_LOW, IPT_UNUSED )
 
 	PORT_START("mainpcb:8BADC.0")        /* b00000 - 8 bit ADC 0 - gas pedal */
@@ -1069,7 +1069,7 @@ static INPUT_PORTS_START( racedrivc )
 	PORT_BIT( 0xff, IP_ACTIVE_LOW, IPT_UNUSED )
 
 	PORT_START("mainpcb:12BADC.0")       /* 400000 - steering wheel */
-	PORT_BIT(0xfff, 0x800, IPT_PADDLE) PORT_MINMAX(0x010, 0xff0) PORT_SENSITIVITY(400) PORT_KEYDELTA(5) PORT_NAME("Steering Wheel")
+	PORT_BIT( 0xfff, 0x800, IPT_POSITIONAL ) PORT_POSITIONS(0xfff) PORT_WRAPS PORT_SENSITIVITY(50) PORT_KEYDELTA(1) PORT_NAME("Steering Wheel")
 
 	/* dummy ADC ports to end up with the same number as the full version */
 	PORT_START("mainpcb:12BADC.1")
@@ -1310,7 +1310,7 @@ static INPUT_PORTS_START( strtdriv )
 	PORT_BIT( 0x0800, IP_ACTIVE_LOW, IPT_BUTTON2 )  /* wings */
 	PORT_BIT( 0x1000, IP_ACTIVE_LOW, IPT_BUTTON3 )  /* wings */
 	PORT_BIT( 0x2000, IP_ACTIVE_LOW, IPT_UNUSED )
-	PORT_BIT( 0x4000, IP_ACTIVE_LOW, IPT_CUSTOM )  /* center edge on steering wheel */
+	PORT_BIT( 0x4000, IP_ACTIVE_LOW, IPT_CUSTOM )  PORT_NAME("Wheel Center Edge")
 	PORT_BIT( 0x8000, IP_ACTIVE_LOW, IPT_UNUSED )
 
 	PORT_START("mainpcb:8BADC.0")        /* b00000 - 8 bit ADC 0 - gas pedal */
@@ -1338,7 +1338,7 @@ static INPUT_PORTS_START( strtdriv )
 	PORT_BIT( 0xff, 0x80, IPT_UNUSED )
 
 	PORT_START("mainpcb:12BADC.0")       /* 400000 - steering wheel */
-	PORT_BIT(0xfff, 0x200, IPT_PADDLE) PORT_MINMAX(0x000, 0x3ff) PORT_SENSITIVITY(100) PORT_KEYDELTA(5) PORT_NAME("Steering Wheel")
+	PORT_BIT( 0xfff, 0x800, IPT_POSITIONAL ) PORT_POSITIONS(0xfff) PORT_WRAPS PORT_SENSITIVITY(50) PORT_KEYDELTA(1) PORT_NAME("Steering Wheel")
 
 	/* dummy ADC ports to end up with the same number as the full version */
 	PORT_START("mainpcb:12BADC.1")       /* FAKE */
@@ -1400,7 +1400,7 @@ static INPUT_PORTS_START( hdrivair )
 	PORT_BIT( 0x0800, IP_ACTIVE_LOW, IPT_BUTTON2 )  /* wings */
 	PORT_BIT( 0x1000, IP_ACTIVE_LOW, IPT_BUTTON3 )  /* wings */
 	PORT_BIT( 0x2000, IP_ACTIVE_LOW, IPT_UNUSED )
-	PORT_BIT( 0x4000, IP_ACTIVE_LOW, IPT_CUSTOM )  /* center edge on steering wheel */
+	PORT_BIT( 0x4000, IP_ACTIVE_LOW, IPT_CUSTOM )  PORT_NAME("Wheel Center Edge")
 	PORT_BIT( 0x8000, IP_ACTIVE_LOW, IPT_UNUSED )
 
 	PORT_START("mainpcb:8BADC.0")        /* b00000 - 8 bit ADC 0 - gas pedal */
@@ -1427,8 +1427,8 @@ static INPUT_PORTS_START( hdrivair )
 	PORT_START("mainpcb:8BADC.7")        /* b00000 - 8 bit ADC 7 - seat adjust */
 	PORT_BIT( 0xff, 0x80, IPT_UNUSED )
 
-	PORT_START("mainpcb:12BADC.0")       /* 400000 - steering wheel */
-	PORT_BIT(0xfff, 0x200, IPT_PADDLE) PORT_MINMAX(0x000, 0x3ff) PORT_SENSITIVITY(100) PORT_KEYDELTA(5) PORT_REVERSE PORT_NAME("Steering Wheel")
+	PORT_START("mainpcb:12BADC.0")       /* 400000 - steering wheel (Dial/Mouse) */
+	PORT_BIT( 0xfff, 0x800, IPT_POSITIONAL ) PORT_POSITIONS(0xfff) PORT_WRAPS PORT_SENSITIVITY(50) PORT_KEYDELTA(1) PORT_REVERSE PORT_NAME("Steering Wheel")
 
 	/* dummy ADC ports to end up with the same number as the full version */
 	PORT_START("mainpcb:12BADC.1")
@@ -5076,6 +5076,8 @@ void harddriv_state::init_harddrivc()
 
 	/* set up adsp speedup handlers */
 	m_adsp->space(AS_DATA).install_read_handler(0x1fff, 0x1fff, read16smo_delegate(*this, FUNC(harddriv_state::hdadsp_speedup_r)));
+
+	init_optical_center_encoder(1024, 0);
 }
 
 
@@ -5152,6 +5154,8 @@ void harddriv_state::racedrivc_init_common(offs_t gsp_protection)
 
 	/* set up adsp speedup handlers */
 	m_adsp->space(AS_DATA).install_read_handler(0x1fff, 0x1fff, read16smo_delegate(*this, FUNC(harddriv_state::hdadsp_speedup_r)));
+
+	init_optical_center_encoder(1024, 0);
 }
 
 void harddriv_state::init_racedrivc() { racedrivc_init_common(0xfff95cd0); }
@@ -5285,6 +5289,9 @@ void harddriv_state::init_strtdriv()
 	m_ds3_speedup_addr = &m_adsp_data_memory[0x1f99];
 	m_ds3_speedup_pc = 0xff;
 	m_ds3_transfer_pc = 0x43672;
+
+
+	init_optical_center_encoder(512, -98);
 }
 
 
